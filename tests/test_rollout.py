@@ -38,6 +38,7 @@ class RolloutTests(unittest.TestCase):
         self.assertEqual(sum(item["active"] for item in experiments), 1)
         with self.assertRaisesRegex(ValueError, "integer from 1 to 99"):
             start(self.registry, candidate, 100)
+        predict(str(self.database), str(self.registry), self.event("before_rollout", "prior_user"))
         start(self.registry, candidate, 25)
         with self.assertRaisesRegex(ValueError, "already active"):
             start(self.registry, candidate, 25)
