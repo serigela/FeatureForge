@@ -68,10 +68,11 @@ def status(registry: str | Path, connection=None) -> dict:
     versions = [baseline]
     if rollout:
         versions.append(rollout["canary_version"])
+    since = rollout["started_at"] if rollout else ""
     for version in versions:
         rows = connection.execute(
             """SELECT p.decision,e.label FROM predictions p JOIN events e USING(event_id)
-            WHERE p.model_version=?""", (version,)
+            WHERE p.model_version=? AND p.scored_at>=?""", (version, since)
         ).fetchall()
         labeled = [row for row in rows if row["label"] is not None]
         tp = sum(row["label"] == 1 and row["decision"] == "review" for row in labeled)
