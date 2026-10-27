@@ -1,0 +1,11 @@
+__pycache__/
+*.egg-info/
+*.py[cod]
+.venv/
+.featureforge/
+*.db
+*.db-shm
+*.db-wal
+*.jsonl
+*.log
+.DS_Store
