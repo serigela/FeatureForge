@@ -52,6 +52,20 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(features["is_new_device"], 1)
             self.assertEqual(features["amount_ratio"], 5)
 
+    def test_24_hour_aggregate_is_not_limited_to_100_prior_events(self):
+        from featureforge.store import insert_event
+        with connect(self.database) as connection:
+            for index in range(125):
+                insert_event(connection, validate({"event_id": f"history_{index:03d}", "user_id": "busy",
+                    "event_time": "2025-01-01T10:00:00+00:00", "amount": 2,
+                    "merchant_category": "retail", "device_id": "known"}))
+            current = validate({"event_id": "latest", "user_id": "busy",
+                "event_time": "2025-01-01T11:00:00+00:00", "amount": 10,
+                "merchant_category": "retail", "device_id": "known"})
+            features = compute(connection, current)
+            self.assertEqual(features["count_24h"], 125)
+            self.assertEqual(features["amount_24h"], 250)
+
     def test_training_serving_replay_and_monitoring(self):
         path = generate(self.root / "events.jsonl", count=500, seed=7)
         with connect(self.database) as connection:
@@ -95,6 +109,8 @@ class PipelineTests(unittest.TestCase):
                 self.assertIn(json.load(response)["decision"], ("review", "approve"))
             with urllib.request.urlopen(base + "/metrics") as response:
                 self.assertEqual(sum(json.load(response)["predictions"].values()), 1)
+            with urllib.request.urlopen(base + "/latency") as response:
+                self.assertEqual(json.load(response)["all"]["count"], 1)
             feedback = urllib.request.Request(base + "/feedback",
                 data=json.dumps({"event_id": "api_1", "label": 1}).encode(),
                 headers={"Content-Type": "application/json"}, method="POST")

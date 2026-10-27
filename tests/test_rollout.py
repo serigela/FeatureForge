@@ -7,6 +7,7 @@ from pathlib import Path
 
 from featureforge.api import make_server, predict
 from featureforge.model import list_models, load, promote, train
+from featureforge.monitor import report as monitor_report
 from featureforge.rollout import rollback, routing_bucket, select, start, status
 from featureforge.simulate import generate
 from featureforge.store import connect, ingest, record_feedback
@@ -50,13 +51,24 @@ class RolloutTests(unittest.TestCase):
         second = predict(str(self.database), str(self.registry), self.event("baseline_1", baseline_user))
         self.assertEqual((first["model_version"], second["model_version"]), (candidate, baseline))
         with connect(self.database) as connection:
+            shadows = connection.execute(
+                "SELECT event_id,model_version FROM prediction_shadows ORDER BY event_id"
+            ).fetchall()
+            self.assertEqual([(row["event_id"], row["model_version"]) for row in shadows],
+                             [("baseline_1", candidate), ("canary_1", baseline)])
             record_feedback(connection, "canary_1", 1)
             view = status(self.registry, connection)
+            self.assertEqual(monitor_report(connection, self.registry)["sample_count"], 2)
         self.assertEqual(view["versions"][candidate]["labeled"], 1)
         self.assertEqual(view["versions"][baseline]["predictions"], 1)
+        self.assertEqual(view["paired"]["event_count"], 2)
+        self.assertEqual(view["paired"]["labeled_count"], 1)
+        self.assertEqual(set(view["paired"]["versions"]), {candidate, baseline})
         self.assertEqual(rollback(self.registry)["active_version"], baseline)
         self.assertEqual(select(self.registry, canary_user)["version"], baseline)
         self.assertTrue(predict(str(self.database), str(self.registry), self.event("canary_1", canary_user))["replayed"])
+        with connect(self.database) as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM prediction_shadows").fetchone()[0], 2)
         self.assertEqual(predict(str(self.database), str(self.registry), self.event("after_rollback", canary_user))["model_version"], baseline)
         with self.assertRaisesRegex(ValueError, "no canary"):
             rollback(self.registry)

@@ -7,6 +7,7 @@ from pathlib import Path
 
 from featureforge.api import predict
 from featureforge.model import train
+from featureforge.rollout import start
 from featureforge.simulate import generate
 from featureforge.store import connect, ingest, record_feedback
 from featureforge.warehouse import sync, verify
@@ -23,6 +24,8 @@ class PostgresWarehouseTests(unittest.TestCase):
             with connect(database) as connection:
                 ingest(connection, path)
                 train(connection, registry, epochs=10)
+                candidate = train(connection, registry, epochs=12, activate=False)
+            start(registry, candidate["version"], 10)
             event = {"event_id": "pg_demo_1", "user_id": "u_pg",
                      "event_time": "2025-03-01T00:00:00+00:00", "amount": 125,
                      "merchant_category": "travel", "device_id": "d_pg"}
@@ -30,6 +33,7 @@ class PostgresWarehouseTests(unittest.TestCase):
             dsn = os.environ["FEATUREFORGE_POSTGRES_DSN"]
             with connect(database) as connection:
                 self.assertEqual(sync(connection, dsn)["predictions"], 1)
+                self.assertEqual(sync(connection, dsn)["prediction_shadows"], 1)
                 self.assertTrue(verify(connection, dsn)["in_sync"])
                 self.assertEqual(sync(connection, dsn)["predictions"], 1)
                 self.assertTrue(verify(connection, dsn)["in_sync"])
