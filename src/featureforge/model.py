@@ -3,6 +3,8 @@
 import hashlib
 import json
 import math
+import os
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -69,7 +71,9 @@ def _quantile_edges(values: list[float]) -> list[float]:
     return [ordered[min(len(ordered) - 1, int(len(ordered) * index / 10))] for index in range(1, 10)]
 
 
-def train(connection, registry: str | Path, epochs: int = 350) -> dict:
+def train(connection, registry: str | Path, epochs: int = 350, activate: bool = True) -> dict:
+    if epochs < 1:
+        raise ValueError("epochs must be positive")
     rows = labeled_rows(connection)
     if len(rows) < 100:
         raise ValueError("at least 100 labeled events are required")
@@ -111,6 +115,15 @@ def train(connection, registry: str | Path, epochs: int = 350) -> dict:
     }
     model["threshold"] = threshold
     model["metrics"] = metrics
+    model["epochs"] = epochs
+    fingerprint_rows = connection.execute(
+        """SELECT event_id,user_id,event_time,amount,merchant_category,device_id,label
+        FROM events ORDER BY event_time,event_id"""
+    ).fetchall()
+    model["dataset_sha256"] = hashlib.sha256(json.dumps(
+        [tuple(row) for row in fingerprint_rows],
+        separators=(",", ":")
+    ).encode()).hexdigest()
     model["trained_at"] = datetime.now(timezone.utc).isoformat()
     model["reference_bins"] = {}
     for name in FEATURE_NAMES:
@@ -129,28 +142,57 @@ def train(connection, registry: str | Path, epochs: int = 350) -> dict:
     directory = Path(registry)
     directory.mkdir(parents=True, exist_ok=True)
     (directory / f"model-{version}.json").write_text(json.dumps(model, indent=2) + "\n", encoding="utf-8")
-    (directory / "active.json").write_text(json.dumps({"version": version}) + "\n", encoding="utf-8")
+    if activate:
+        promote(directory, version)
+    elif not (directory / "active.json").exists():
+        _write_pointer(directory, version)
     return model
 
 
 def load(registry: str | Path) -> dict:
     directory = Path(registry)
     pointer = json.loads((directory / "active.json").read_text(encoding="utf-8"))
-    version = pointer["version"]
+    return load_version(directory, pointer["version"])
+
+
+def load_version(registry: str | Path, version: str) -> dict:
+    directory = Path(registry)
     if not isinstance(version, str) or not all(c in "0123456789abcdef" for c in version):
         raise ValueError("invalid model version")
     model = json.loads((directory / f"model-{version}.json").read_text(encoding="utf-8"))
     if model["feature_names"] != list(FEATURE_NAMES):
         raise ValueError("model feature schema does not match serving code")
+    if model.get("version") != version:
+        raise ValueError("model version does not match registry entry")
     return model
+
+
+def list_models(registry: str | Path) -> list[dict]:
+    directory = Path(registry)
+    active = load(directory)["version"]
+    models = []
+    for path in directory.glob("model-*.json"):
+        version = path.stem.removeprefix("model-")
+        candidate = load_version(directory, version)
+        models.append({"version": version, "active": version == active,
+                       "trained_at": candidate["trained_at"],
+                       "epochs": candidate.get("epochs"),
+                       "dataset_sha256": candidate.get("dataset_sha256"),
+                       "metrics": candidate["metrics"]})
+    return sorted(models, key=lambda item: item["trained_at"], reverse=True)
+
+
+def _write_pointer(directory: Path, version: str) -> None:
+    with tempfile.NamedTemporaryFile("w", dir=directory, prefix=".active-", delete=False,
+                                     encoding="utf-8") as stream:
+        json.dump({"version": version}, stream)
+        stream.write("\n")
+        temporary = Path(stream.name)
+    os.replace(temporary, directory / "active.json")
 
 
 def promote(registry: str | Path, version: str) -> None:
     directory = Path(registry)
-    candidate = directory / f"model-{version}.json"
-    if not candidate.is_file():
-        raise ValueError("model version does not exist")
-    model = json.loads(candidate.read_text(encoding="utf-8"))
-    if model.get("version") != version or model.get("feature_names") != list(FEATURE_NAMES):
-        raise ValueError("candidate model is invalid")
-    (directory / "active.json").write_text(json.dumps({"version": version}) + "\n", encoding="utf-8")
+    load_version(directory, version)
+    _write_pointer(directory, version)
+    (directory / "rollout.json").unlink(missing_ok=True)

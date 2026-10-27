@@ -6,8 +6,9 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .features import compute
-from .model import load, score
+from .model import list_models, load, score
 from .monitor import report
+from .rollout import select as select_model, status as rollout_status
 from .online import get as get_online, parity_report, persist
 from .store import connect, insert_event, record_feedback, validate
 from .dashboard import HTML
@@ -30,7 +31,7 @@ def predict(db_path: str, registry: str, raw: dict) -> dict:
                     "score": previous["score"], "decision": previous["decision"], "replayed": True}
         if connection.execute("SELECT 1 FROM events WHERE event_id=?", (event["event_id"],)).fetchone():
             raise ValueError("event_id already exists in historical data")
-        model = load(registry)
+        model = select_model(registry, event["user_id"])
         feature_values = compute(connection, event)
         probability = score(model, feature_values)
         decision = "review" if probability >= model["threshold"] else "approve"
@@ -47,7 +48,7 @@ def predict(db_path: str, registry: str, raw: dict) -> dict:
 
 
 def make_server(db_path: str, registry: str, host: str = "127.0.0.1", port: int = 8080) -> ThreadingHTTPServer:
-    model = load(registry)
+    load(registry)
 
     class Handler(BaseHTTPRequestHandler):
         def send_json(self, status: int, payload: dict) -> None:
@@ -67,7 +68,12 @@ def make_server(db_path: str, registry: str, host: str = "127.0.0.1", port: int 
                 self.end_headers()
                 self.wfile.write(body)
             elif self.path == "/health":
-                self.send_json(200, {"status": "ok", "model_version": model["version"]})
+                self.send_json(200, {"status": "ok", "model_version": load(registry)["version"]})
+            elif self.path == "/models":
+                self.send_json(200, {"models": list_models(registry)})
+            elif self.path == "/rollout":
+                with connect(db_path) as connection:
+                    self.send_json(200, rollout_status(registry, connection))
             elif self.path == "/metrics":
                 with connect(db_path) as connection:
                     counts = connection.execute(

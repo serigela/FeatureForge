@@ -9,8 +9,9 @@ from pathlib import Path
 
 from .api import serve
 from .broker import process_one, publish, replay_dead, run_worker, stats as queue_stats
-from .model import load, promote, train
+from .model import list_models, load, promote, train
 from .monitor import report
+from .rollout import rollback, start as start_canary, status as rollout_status
 from .online import parity_report
 from .simulate import generate
 from .store import connect, ingest
@@ -28,6 +29,7 @@ def main() -> None:
     ingest_cmd.add_argument("path", type=Path)
     train_cmd = commands.add_parser("train", help="train and evaluate a time-split model")
     train_cmd.add_argument("--epochs", type=int, default=350)
+    train_cmd.add_argument("--stage", action="store_true", help="save candidate without making it active")
     serve_cmd = commands.add_parser("serve", help="start the prediction API")
     serve_cmd.add_argument("--host", default="127.0.0.1")
     serve_cmd.add_argument("--port", type=int, default=8080)
@@ -35,6 +37,12 @@ def main() -> None:
     monitor_cmd.add_argument("--window", type=int, default=500)
     promote_cmd = commands.add_parser("promote", help="select an existing model version")
     promote_cmd.add_argument("version")
+    commands.add_parser("models", help="list experiments and evaluation metrics")
+    canary_cmd = commands.add_parser("canary", help="route a stable percentage of users to a candidate")
+    canary_cmd.add_argument("version")
+    canary_cmd.add_argument("--percent", type=int, required=True)
+    commands.add_parser("rollout", help="show rollout and labeled outcome counts by version")
+    commands.add_parser("rollback", help="stop the canary and keep the baseline active")
     publish_cmd = commands.add_parser("publish", help="enqueue one JSON event from a file")
     publish_cmd.add_argument("path", type=Path)
     worker_cmd = commands.add_parser("worker", help="process queued events with retries")
@@ -62,8 +70,10 @@ def main() -> None:
             print(json.dumps(ingest(connection, args.path), indent=2))
     elif args.command == "train":
         with connect(db_path) as connection:
-            model = train(connection, registry, args.epochs)
+            model = train(connection, registry, args.epochs, activate=not args.stage)
         print(json.dumps({"version": model["version"], "threshold": model["threshold"],
+                          "dataset_sha256": model["dataset_sha256"],
+                          "active": load(registry)["version"] == model["version"],
                           "metrics": model["metrics"]}, indent=2))
     elif args.command == "serve":
         serve(str(db_path), str(registry), args.host, args.port)
@@ -73,6 +83,15 @@ def main() -> None:
     elif args.command == "promote":
         promote(registry, args.version)
         print(json.dumps({"active_version": load(registry)["version"]}))
+    elif args.command == "models":
+        print(json.dumps({"models": list_models(registry)}, indent=2))
+    elif args.command == "canary":
+        print(json.dumps(start_canary(registry, args.version, args.percent), indent=2))
+    elif args.command == "rollback":
+        print(json.dumps(rollback(registry), indent=2))
+    elif args.command == "rollout":
+        with connect(db_path) as connection:
+            print(json.dumps(rollout_status(registry, connection), indent=2))
     elif args.command == "publish":
         payload = json.loads(args.path.read_text(encoding="utf-8"))
         with connect(db_path) as connection:

@@ -26,10 +26,11 @@ footer{font-size:13px;color:#789294;margin-top:28px}@media(max-width:700px){.gri
 <div class="panel span2"><h2>Observed outcomes</h2><div id="outcomes">Waiting for feedback.</div></div></section>
 <section class="grid"><div class="panel span2"><h2>Event pipeline</h2><div id="queue">Waiting for events.</div></div>
 <div class="panel span2"><h2>Online feature checks</h2><div id="parity">Waiting for snapshots.</div></div></section>
+<section class="panel"><h2>Model rollout</h2><div id="rollout">Waiting for model status.</div></section>
 <footer>Demo data is synthetic. Precision and recall appear only after outcomes are submitted. Auto-refreshes every 10 seconds.</footer>
 </main><script>
 const escapeHTML=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-async function refresh(){try{const [health,metrics,monitor,parity]=await Promise.all(['/health','/metrics','/monitor','/parity'].map(p=>fetch(p).then(r=>r.json())));
+async function refresh(){try{const [health,metrics,monitor,parity,rollout]=await Promise.all(['/health','/metrics','/monitor','/parity','/rollout'].map(p=>fetch(p).then(r=>r.json())));
 document.getElementById('version').textContent=health.model_version;
 const counts=metrics.predictions||{};document.getElementById('predictions').textContent=(counts.approve||0)+(counts.review||0);
 document.getElementById('review').textContent=counts.review||0;
@@ -39,5 +40,8 @@ document.getElementById('features').innerHTML=fs.length?fs.map(([name,psi])=>`<d
 const o=monitor.outcomes||{};document.getElementById('outcomes').innerHTML=`<div class="row"><span>Labeled predictions</span><strong>${o.labeled_count||0}</strong></div><div class="row"><span>Precision</span><strong>${o.precision==null?'—':(o.precision*100).toFixed(1)+'%'}</strong></div><div class="row"><span>Recall</span><strong>${o.recall==null?'—':(o.recall*100).toFixed(1)+'%'}</strong></div>`;
 const q=metrics.queue||{};document.getElementById('queue').innerHTML=['pending','inflight','retry','dead','done'].map(name=>`<div class="row"><span>${name}</span><strong>${q[name]||0}</strong></div>`).join('');
 document.getElementById('parity').innerHTML=`<div class="row"><span>Users checked</span><strong>${parity.checked_users}</strong></div><div class="row"><span>Parity mismatches</span><strong>${parity.mismatch_count}</strong></div><div class="row"><span>Stale snapshots</span><strong>${parity.stale_count}</strong></div>`;
+const assignment=rollout.rollout;const versions=rollout.versions||{};
+document.getElementById('rollout').innerHTML=`<div class="row"><span>Traffic split</span><strong>${assignment?`${assignment.percent}% canary`:'100% active'}</strong></div>`+
+Object.entries(versions).map(([version,v])=>`<div class="row"><span>${escapeHTML(version)} ${assignment&&version===assignment.canary_version?'(canary)':'(active)'}</span><strong>${v.predictions} predictions · ${v.labeled} labeled · precision ${v.precision==null?'—':(v.precision*100).toFixed(1)+'%'} · recall ${v.recall==null?'—':(v.recall*100).toFixed(1)+'%'}</strong></div>`).join('');
 }catch(e){document.getElementById('status').textContent='Unavailable'}}refresh();setInterval(refresh,10000);
 </script></body></html>"""
