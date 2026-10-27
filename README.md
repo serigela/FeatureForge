@@ -1,6 +1,6 @@
 # FeatureForge
 
-An inspectable ML platform for transaction risk. It creates synthetic data, validates and stores events, computes past-only features, trains a model with a chronological split, serves predictions, and checks live feature drift. A durable broker handles retries and replay. Online feature snapshots can be compared with offline recomputation, and PostgreSQL can mirror the warehouse tables. The core demo runs locally with Python's standard library and no credentials.
+An inspectable ML platform for transaction risk. It creates synthetic data, validates and stores events, computes past-only features, trains a model with a chronological split, serves predictions, and checks live feature drift. A durable broker handles retries and replay. Online feature snapshots can be compared with offline recomputation, and PostgreSQL can mirror the warehouse tables. Staged experiments and stable user-level canary routing make model changes observable. The core demo runs locally with Python's standard library and no credentials.
 
 ## Why this exists
 
@@ -39,6 +39,8 @@ flowchart LR
   D --> E[Chronological train / validation / test]
   E --> F[Versioned model registry]
   F --> G[Prediction API]
+  F --> N[Staged experiment and canary routing]
+  N --> G
   C --> G
   G --> H[(Prediction log)]
   H --> I[Drift and outcome monitoring]
@@ -66,9 +68,22 @@ PYTHONPATH=src python3 -m featureforge.cli promote MODEL_VERSION
 PYTHONPATH=src python3 -m featureforge.cli recovery-demo
 PYTHONPATH=src python3 -m featureforge.cli queue-stats
 PYTHONPATH=src python3 -m featureforge.cli parity
+PYTHONPATH=src python3 -m featureforge.cli models
+PYTHONPATH=src python3 -m featureforge.cli train --stage
+PYTHONPATH=src python3 -m featureforge.cli canary MODEL_VERSION --percent 10
+PYTHONPATH=src python3 -m featureforge.cli rollout
+PYTHONPATH=src python3 -m featureforge.cli rollback
 ```
 
 `train` prints validation and test precision, recall, F1, confusion counts, and test average precision. The test set is the newest 20% of labeled events. The baseline is regularized logistic regression implemented locally for transparent operation and zero runtime dependencies. Performance figures from synthetic data should never be presented as real-world fraud detection results.
+
+## Experiments and staged rollout
+
+Every training run saves its model, dataset fingerprint, epoch count, threshold, and time-split evaluation. `models` lists these experiments. By default, `train` activates the new version; use `train --stage` to keep the current model live. The first trained model becomes active even with `--stage` because serving needs a baseline.
+
+After reviewing a staged version, run `canary MODEL_VERSION --percent 10`. The same user is always routed to the same version during that rollout, based on a stable hash of `user_id`. An event replay keeps its original prediction and model version. `rollout` and `GET /rollout` show prediction counts, labeled counts, review rate, observed precision, and recall by version. `rollback` stops routing new users to the candidate while preserving existing prediction records; `promote MODEL_VERSION` makes a version active for all new predictions and ends the canary. `GET /health` reflects a promotion without restarting the API.
+
+These outcome figures are descriptive. Small labeled samples and different user populations can make a canary comparison misleading. The project does not automatically promote or roll back a model, and the API is intended for local demonstration only.
 
 ## API
 
@@ -85,6 +100,8 @@ PYTHONPATH=src python3 -m featureforge.cli parity
 | `POST /replay` | Requeue a dead event by `event_id` |
 | `GET /features/{user_id}` | Latest online feature snapshot and age |
 | `GET /parity` | Compare online features with offline recomputation |
+| `GET /models` | List model experiments and offline evaluation |
+| `GET /rollout` | Show traffic split and observed outcomes by model version |
 | `GET /` | Local operations dashboard |
 
 `POST /predict` requires `event_id`, `user_id`, timezone-aware ISO 8601 `event_time`, positive `amount`, `merchant_category`, and `device_id`. It returns a risk score and a `review` or `approve` decision. For the demo, use an event timestamp after the synthetic history.
@@ -121,15 +138,15 @@ The broker and online store use SQLite so the core system runs on a laptop; Post
 
 Next substantial phases:
 
-1. Add experiment tracking, staged model rollout, automatic rollback, and latency charts to the dashboard.
+1. Add automatic rollback guardrails backed by sufficient labeled outcomes and latency charts to the dashboard.
 2. Add a real public dataset with documented licensing and a reproducible benchmark. Keep personal or payment data out of the repository.
 3. Replace the local broker with a distributed event system and add a high-volume load and recovery benchmark.
 
 ## Repository structure
 
 ```text
-src/featureforge/  generator, ingestion, broker, features, training, API, stores, monitoring, CLI
-tests/             pipeline, recovery, parity, HTTP, and PostgreSQL checks
+src/featureforge/  generator, ingestion, broker, features, training, rollout, API, stores, monitoring, CLI
+tests/             pipeline, recovery, parity, rollout, HTTP, and PostgreSQL checks
 .github/workflows/ CI with PostgreSQL service
 compose.yaml       local PostgreSQL warehouse
 Dockerfile         containerized API
