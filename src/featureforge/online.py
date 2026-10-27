@@ -34,6 +34,34 @@ def persist(connection: sqlite3.Connection, event: dict, features: dict[str, flo
     )
 
 
+def rebuild(connection: sqlite3.Connection) -> dict:
+    """Recompute saved prediction features after a feature definition upgrade."""
+    now = datetime.now(timezone.utc).isoformat()
+    rows = connection.execute(
+        """SELECT s.event_id,s.user_id,s.event_time,e.amount,e.merchant_category,e.device_id
+        FROM feature_snapshots s JOIN events e USING(event_id)
+        ORDER BY s.user_id,s.event_time,s.event_id"""
+    ).fetchall()
+    latest = {}
+    for row in rows:
+        event = dict(row)
+        features = json.dumps(compute(connection, event), sort_keys=True, separators=(",", ":"))
+        connection.execute(
+            """UPDATE feature_snapshots SET feature_version=?,features_json=?,computed_at=?
+            WHERE event_id=?""", (FEATURE_VERSION, features, now, row["event_id"])
+        )
+        latest[row["user_id"]] = (row["user_id"], row["event_id"], row["event_time"],
+                                  FEATURE_VERSION, features, now)
+    connection.execute("DELETE FROM online_features")
+    connection.executemany(
+        """INSERT INTO online_features
+        (user_id,event_id,event_time,feature_version,features_json,updated_at)
+        VALUES (?,?,?,?,?,?)""", latest.values()
+    )
+    return {"snapshots_rebuilt": len(rows), "users_rebuilt": len(latest),
+            "feature_version": FEATURE_VERSION}
+
+
 def get(connection: sqlite3.Connection, user_id: str, max_age_seconds: int = 300) -> dict | None:
     row = connection.execute("SELECT * FROM online_features WHERE user_id=?", (user_id,)).fetchone()
     if row is None:

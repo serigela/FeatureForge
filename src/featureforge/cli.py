@@ -12,7 +12,7 @@ from .broker import process_one, publish, replay_dead, run_worker, stats as queu
 from .model import list_models, load, promote, train
 from .monitor import report
 from .rollout import rollback, start as start_canary, status as rollout_status
-from .online import parity_report
+from .online import parity_report, rebuild as rebuild_online
 from .performance import benchmark, report as latency_report
 from .simulate import generate
 from .store import connect, ingest
@@ -59,6 +59,7 @@ def main() -> None:
     commands.add_parser("recovery-demo", help="simulate crash after scoring and verify replay")
     parity_cmd = commands.add_parser("parity", help="compare online features with offline recomputation")
     parity_cmd.add_argument("--max-age", type=int, default=300)
+    commands.add_parser("rebuild-online", help="recompute saved online features after an upgrade")
     commands.add_parser("sync-postgres", help="mirror local data to PostgreSQL")
     commands.add_parser("verify-postgres", help="compare local and PostgreSQL row counts")
     commands.add_parser("demo", help="generate, ingest, train, and print evaluation")
@@ -138,6 +139,9 @@ def main() -> None:
     elif args.command == "parity":
         with connect(db_path) as connection:
             print(json.dumps(parity_report(connection, args.max_age), indent=2))
+    elif args.command == "rebuild-online":
+        with connect(db_path) as connection:
+            print(json.dumps(rebuild_online(connection), indent=2))
     elif args.command in ("sync-postgres", "verify-postgres"):
         dsn = os.environ.get("FEATUREFORGE_POSTGRES_DSN")
         if not dsn:
