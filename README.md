@@ -57,7 +57,7 @@ flowchart LR
 
 The same `features.compute` function runs in training and inference. It queries only events before the event being scored. Model threshold selection uses the validation period; the final test period is untouched until evaluation. The API stores each prediction by event ID and returns the original result on a replay.
 
-The 24-hour count and amount features aggregate **all** preceding events in that window. The prior mean and new-device check intentionally use the latest 100 preceding events. This distinction is enforced by a regression test. Feature definition version `v2` rejects older model files; retrain after upgrading from a version that used the capped 24-hour aggregate.
+The 24-hour count and amount features aggregate **all** preceding events in that window. The prior mean and new-device check intentionally use the latest 100 preceding events. This distinction is enforced by a regression test. Feature definition version `v2` rejects older model files. After upgrading from a version with the capped 24-hour aggregate, retrain the model, then run `rebuild-online` to recompute saved feature snapshots. The rebuild preserves prediction decisions and refreshes each user's latest online snapshot.
 
 The broker stores validated events before a worker scores them. A worker claims a time-limited lease; if it crashes, another worker can reclaim the event. A failure retries with backoff, then moves to a dead-letter state after five attempts. Replaying a delivered event returns its original prediction, so the side effect occurs once even though delivery can occur more than once. The `recovery-demo` command demonstrates this exact failure point.
 
@@ -73,6 +73,7 @@ PYTHONPATH=src python3 -m featureforge.cli promote MODEL_VERSION
 PYTHONPATH=src python3 -m featureforge.cli recovery-demo
 PYTHONPATH=src python3 -m featureforge.cli queue-stats
 PYTHONPATH=src python3 -m featureforge.cli parity
+PYTHONPATH=src python3 -m featureforge.cli rebuild-online
 PYTHONPATH=src python3 -m featureforge.cli models
 PYTHONPATH=src python3 -m featureforge.cli train --stage
 PYTHONPATH=src python3 -m featureforge.cli canary MODEL_VERSION --percent 10
