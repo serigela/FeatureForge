@@ -15,6 +15,7 @@ from .online import get as get_online, parity_report, persist
 from .store import connect, insert_event, record_feedback, validate
 from .dashboard import HTML
 from .broker import publish, replay_dead, stats as queue_stats
+from .quality import report as quality_report
 
 
 def predict(db_path: str, registry: str, raw: dict) -> dict:
@@ -118,6 +119,9 @@ def make_server(db_path: str, registry: str, host: str = "127.0.0.1", port: int 
             elif self.path == "/queue":
                 with connect(db_path) as connection:
                     self.send_json(200, queue_stats(connection))
+            elif self.path == "/quality":
+                with connect(db_path) as connection:
+                    self.send_json(200, quality_report(connection))
             else:
                 self.send_json(404, {"error": "not found"})
 

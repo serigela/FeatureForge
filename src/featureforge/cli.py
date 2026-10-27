@@ -14,6 +14,7 @@ from .monitor import report
 from .rollout import rollback, start as start_canary, status as rollout_status
 from .online import parity_report, rebuild as rebuild_online
 from .performance import benchmark, report as latency_report
+from .quality import report as quality_report
 from .simulate import generate
 from .store import connect, ingest
 from .warehouse import sync as sync_postgres, verify as verify_postgres
@@ -56,6 +57,7 @@ def main() -> None:
     replay_cmd = commands.add_parser("replay", help="requeue a dead letter")
     replay_cmd.add_argument("event_id")
     commands.add_parser("queue-stats", help="show broker queue counts")
+    commands.add_parser("quality", help="show event, label, queue, and quarantine quality")
     commands.add_parser("recovery-demo", help="simulate crash after scoring and verify replay")
     parity_cmd = commands.add_parser("parity", help="compare online features with offline recomputation")
     parity_cmd.add_argument("--max-age", type=int, default=300)
@@ -116,6 +118,9 @@ def main() -> None:
     elif args.command == "queue-stats":
         with connect(db_path) as connection:
             print(json.dumps(queue_stats(connection), indent=2))
+    elif args.command == "quality":
+        with connect(db_path) as connection:
+            print(json.dumps(quality_report(connection), indent=2))
     elif args.command == "recovery-demo":
         from .broker import claim
         from .api import predict
