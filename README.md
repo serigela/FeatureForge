@@ -103,6 +103,8 @@ Every new prediction stores `processing_ms`, measured from validation through fe
 
 ## API
 
+`featureforge quality` and `GET /quality` return a read-only quality snapshot: event and quarantine counts, label coverage, queue states, the most recent ingestion time, and a quarantine ratio. This ratio is a simple stored-row indicator; duplicates are not included in its denominator.
+
 | Endpoint | Purpose |
 | --- | --- |
 | `GET /health` | Active model and health |
