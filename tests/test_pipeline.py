@@ -11,7 +11,7 @@ from featureforge.broker import claim, process_one, publish, replay_dead, stats 
 from featureforge.features import compute
 from featureforge.model import load, promote, train
 from featureforge.monitor import report
-from featureforge.online import get as get_online, parity_report
+from featureforge.online import get as get_online, parity_report, rebuild as rebuild_online
 from featureforge.simulate import generate
 from featureforge.store import connect, ingest, record_feedback, validate
 
@@ -151,6 +151,23 @@ class PipelineTests(unittest.TestCase):
             self.assertTrue(record_feedback(connection, "fb_1", 1)["replayed"])
             with self.assertRaisesRegex(ValueError, "different label"):
                 record_feedback(connection, "fb_1", 0)
+
+    def test_rebuild_online_migrates_older_feature_snapshots(self):
+        path = generate(self.root / "events.jsonl", count=150, seed=31)
+        with connect(self.database) as connection:
+            ingest(connection, path)
+            train(connection, self.registry, epochs=10)
+        event = {"event_id": "migration_1", "user_id": "migration_user",
+                 "event_time": "2025-03-01T00:00:00+00:00", "amount": 50,
+                 "merchant_category": "retail", "device_id": "migration_device"}
+        predict(str(self.database), str(self.registry), event)
+        with connect(self.database) as connection:
+            connection.execute("UPDATE feature_snapshots SET feature_version='v1' WHERE event_id='migration_1'")
+            connection.execute("UPDATE online_features SET feature_version='v1' WHERE user_id='migration_user'")
+            self.assertEqual(parity_report(connection)["mismatch_count"], 1)
+            self.assertEqual(rebuild_online(connection)["snapshots_rebuilt"], 1)
+            self.assertEqual(parity_report(connection)["mismatch_count"], 0)
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM predictions").fetchone()[0], 1)
 
     def test_broker_recovers_after_prediction_before_ack(self):
         path = generate(self.root / "events.jsonl", count=200, seed=6)
