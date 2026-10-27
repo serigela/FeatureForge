@@ -17,7 +17,7 @@ h1{font-size:clamp(36px,6vw,64px);letter-spacing:-.06em;margin:14px 0 8px}p{colo
 .fill{height:100%;background:#66d6c4;border-radius:99px}.alert{color:#ffb48e}.ok{color:#66d6c4}
 footer{font-size:13px;color:#789294;margin-top:28px}@media(max-width:700px){.grid{grid-template-columns:1fr 1fr}.span2{grid-column:span 2}}
 </style></head><body><main><div class="eyebrow">FeatureForge / Operations</div>
-<h1>Model health at a glance.</h1><p class="lead">Live predictions, feature drift, and delayed outcomes from the local transaction-risk pipeline.</p>
+<h1>Model health at a glance.</h1><p class="lead">Live predictions, paired canary evaluation, processing time, feature drift, and delayed outcomes from the local transaction-risk pipeline.</p>
 <section class="grid"><div class="card"><div class="label">Model version</div><div class="value" id="version">—</div></div>
 <div class="card"><div class="label">Predictions</div><div class="value" id="predictions">—</div></div>
 <div class="card"><div class="label">Flagged for review</div><div class="value" id="review">—</div></div>
@@ -27,10 +27,11 @@ footer{font-size:13px;color:#789294;margin-top:28px}@media(max-width:700px){.gri
 <section class="grid"><div class="panel span2"><h2>Event pipeline</h2><div id="queue">Waiting for events.</div></div>
 <div class="panel span2"><h2>Online feature checks</h2><div id="parity">Waiting for snapshots.</div></div></section>
 <section class="panel"><h2>Model rollout</h2><div id="rollout">Waiting for model status.</div></section>
-<footer>Demo data is synthetic. Precision and recall appear only after outcomes are submitted. Auto-refreshes every 10 seconds.</footer>
+<section class="panel"><h2>Prediction processing time</h2><div id="latency">Waiting for measurements.</div></section>
+<footer>Demo data is synthetic. Paired results score both models on the same events; only one result is served. Timings exclude the storage write and network. Auto-refreshes every 10 seconds.</footer>
 </main><script>
 const escapeHTML=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-async function refresh(){try{const [health,metrics,monitor,parity,rollout]=await Promise.all(['/health','/metrics','/monitor','/parity','/rollout'].map(p=>fetch(p).then(r=>r.json())));
+async function refresh(){try{const [health,metrics,monitor,parity,rollout,latency]=await Promise.all(['/health','/metrics','/monitor','/parity','/rollout','/latency'].map(p=>fetch(p).then(r=>r.json())));
 document.getElementById('version').textContent=health.model_version;
 const counts=metrics.predictions||{};document.getElementById('predictions').textContent=(counts.approve||0)+(counts.review||0);
 document.getElementById('review').textContent=counts.review||0;
@@ -42,6 +43,9 @@ const q=metrics.queue||{};document.getElementById('queue').innerHTML=['pending',
 document.getElementById('parity').innerHTML=`<div class="row"><span>Users checked</span><strong>${parity.checked_users}</strong></div><div class="row"><span>Parity mismatches</span><strong>${parity.mismatch_count}</strong></div><div class="row"><span>Stale snapshots</span><strong>${parity.stale_count}</strong></div>`;
 const assignment=rollout.rollout;const versions=rollout.versions||{};
 document.getElementById('rollout').innerHTML=`<div class="row"><span>Traffic split</span><strong>${assignment?`${assignment.percent}% canary`:'100% active'}</strong></div>`+
-Object.entries(versions).map(([version,v])=>`<div class="row"><span>${escapeHTML(version)} ${assignment&&version===assignment.canary_version?'(canary)':'(active)'}</span><strong>${v.predictions} predictions · ${v.labeled} labeled · precision ${v.precision==null?'—':(v.precision*100).toFixed(1)+'%'} · recall ${v.recall==null?'—':(v.recall*100).toFixed(1)+'%'}</strong></div>`).join('');
+Object.entries(versions).map(([version,v])=>`<div class="row"><span>${escapeHTML(version)} ${assignment&&version===assignment.canary_version?'(canary)':'(active)'}</span><strong>${v.predictions} served · ${v.labeled} labeled</strong></div>`).join('')+
+(rollout.paired?`<div class="row"><span>Paired events / labeled</span><strong>${rollout.paired.event_count} / ${rollout.paired.labeled_count}</strong></div><div class="row"><span>Decision disagreement</span><strong>${rollout.paired.disagreement_rate==null?'—':(rollout.paired.disagreement_rate*100).toFixed(1)+'%'}</strong></div>`+Object.entries(rollout.paired.versions).map(([version,v])=>`<div class="row"><span>${escapeHTML(version)} paired outcomes</span><strong>precision ${v.precision==null?'—':(v.precision*100).toFixed(1)+'%'} · recall ${v.recall==null?'—':(v.recall*100).toFixed(1)+'%'}</strong></div>`).join(''):'');
+const timing=latency.all||{};const largest=timing.max_ms||1;
+document.getElementById('latency').innerHTML=timing.count?['p50_ms','p95_ms','p99_ms'].map(name=>`<div class="row"><span>${name.replace('_ms','').toUpperCase()} · ${timing.count} measured<div class="bar"><div class="fill" style="width:${Math.min(100,100*timing[name]/largest)}%"></div></div></span><strong>${timing[name].toFixed(3)} ms</strong></div>`).join(''):'Waiting for predictions.';
 }catch(e){document.getElementById('status').textContent='Unavailable'}}refresh();setInterval(refresh,10000);
 </script></body></html>"""

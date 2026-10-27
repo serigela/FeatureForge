@@ -2,13 +2,15 @@
 
 import json
 import sqlite3
+import time
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .features import compute
 from .model import list_models, load, score
 from .monitor import report
-from .rollout import select as select_model, status as rollout_status
+from .performance import report as latency_report
+from .rollout import select_pair, status as rollout_status
 from .online import get as get_online, parity_report, persist
 from .store import connect, insert_event, record_feedback, validate
 from .dashboard import HTML
@@ -16,6 +18,7 @@ from .broker import publish, replay_dead, stats as queue_stats
 
 
 def predict(db_path: str, registry: str, raw: dict) -> dict:
+    started = time.perf_counter_ns()
     event = validate(raw)
     with connect(db_path) as connection:
         connection.execute("BEGIN IMMEDIATE")
@@ -31,18 +34,28 @@ def predict(db_path: str, registry: str, raw: dict) -> dict:
                     "score": previous["score"], "decision": previous["decision"], "replayed": True}
         if connection.execute("SELECT 1 FROM events WHERE event_id=?", (event["event_id"],)).fetchone():
             raise ValueError("event_id already exists in historical data")
-        model = select_model(registry, event["user_id"])
+        model, shadow_model = select_pair(registry, event["user_id"])
         feature_values = compute(connection, event)
         probability = score(model, feature_values)
         decision = "review" if probability >= model["threshold"] else "approve"
+        shadow_probability = score(shadow_model, feature_values) if shadow_model else None
+        processing_ms = (time.perf_counter_ns() - started) / 1_000_000
+        scored_at = datetime.now(timezone.utc).isoformat()
         insert_event(connection, event)
         persist(connection, event, feature_values)
         connection.execute(
-            """INSERT INTO predictions(event_id,model_version,score,decision,features_json,scored_at)
-            VALUES (?,?,?,?,?,?)""",
+            """INSERT INTO predictions(event_id,model_version,score,decision,features_json,scored_at,processing_ms)
+            VALUES (?,?,?,?,?,?,?)""",
             (event["event_id"], model["version"], probability, decision,
-             json.dumps(feature_values, sort_keys=True), datetime.now(timezone.utc).isoformat()),
+             json.dumps(feature_values, sort_keys=True), scored_at, processing_ms),
         )
+        if shadow_model:
+            connection.execute(
+                """INSERT INTO prediction_shadows(event_id,model_version,score,decision,scored_at)
+                VALUES (?,?,?,?,?)""",
+                (event["event_id"], shadow_model["version"], shadow_probability,
+                 "review" if shadow_probability >= shadow_model["threshold"] else "approve", scored_at),
+            )
         return {"event_id": event["event_id"], "model_version": model["version"],
                 "score": round(probability, 6), "decision": decision, "replayed": False}
 
@@ -74,6 +87,9 @@ def make_server(db_path: str, registry: str, host: str = "127.0.0.1", port: int 
             elif self.path == "/rollout":
                 with connect(db_path) as connection:
                     self.send_json(200, rollout_status(registry, connection))
+            elif self.path == "/latency":
+                with connect(db_path) as connection:
+                    self.send_json(200, latency_report(connection))
             elif self.path == "/metrics":
                 with connect(db_path) as connection:
                     counts = connection.execute(

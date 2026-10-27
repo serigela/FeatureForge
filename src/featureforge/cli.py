@@ -13,6 +13,7 @@ from .model import list_models, load, promote, train
 from .monitor import report
 from .rollout import rollback, start as start_canary, status as rollout_status
 from .online import parity_report
+from .performance import benchmark, report as latency_report
 from .simulate import generate
 from .store import connect, ingest
 from .warehouse import sync as sync_postgres, verify as verify_postgres
@@ -43,6 +44,11 @@ def main() -> None:
     canary_cmd.add_argument("--percent", type=int, required=True)
     commands.add_parser("rollout", help="show rollout and labeled outcome counts by version")
     commands.add_parser("rollback", help="stop the canary and keep the baseline active")
+    latency_cmd = commands.add_parser("latency", help="show measured prediction processing time")
+    latency_cmd.add_argument("--window", type=int, default=500)
+    benchmark_cmd = commands.add_parser("benchmark", help="run an isolated concurrent prediction load test")
+    benchmark_cmd.add_argument("--count", type=int, default=200)
+    benchmark_cmd.add_argument("--workers", type=int, default=4)
     publish_cmd = commands.add_parser("publish", help="enqueue one JSON event from a file")
     publish_cmd.add_argument("path", type=Path)
     worker_cmd = commands.add_parser("worker", help="process queued events with retries")
@@ -92,6 +98,11 @@ def main() -> None:
     elif args.command == "rollout":
         with connect(db_path) as connection:
             print(json.dumps(rollout_status(registry, connection), indent=2))
+    elif args.command == "latency":
+        with connect(db_path) as connection:
+            print(json.dumps(latency_report(connection, args.window), indent=2))
+    elif args.command == "benchmark":
+        print(json.dumps(benchmark(db_path, registry, args.count, args.workers), indent=2))
     elif args.command == "publish":
         payload = json.loads(args.path.read_text(encoding="utf-8"))
         with connect(db_path) as connection:

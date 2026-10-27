@@ -15,7 +15,8 @@ def _bucket(value: float, edges: list[float]) -> int:
 def report(connection, registry, window: int = 500) -> dict:
     model = load(registry)
     rows = connection.execute(
-        "SELECT features_json,score FROM predictions ORDER BY scored_at DESC LIMIT ?", (window,)
+        """SELECT features_json,score FROM predictions WHERE model_version=?
+        ORDER BY scored_at DESC LIMIT ?""", (model["version"], window)
     ).fetchall()
     import json
     features = [json.loads(row["features_json"]) for row in rows]
@@ -36,7 +37,8 @@ def report(connection, registry, window: int = 500) -> dict:
     worst = max(results.values())
     outcomes = connection.execute(
         """SELECT e.label,p.decision FROM predictions p JOIN events e USING(event_id)
-        WHERE e.label IS NOT NULL ORDER BY p.scored_at DESC LIMIT ?""", (window,)
+        WHERE e.label IS NOT NULL AND p.model_version=? ORDER BY p.scored_at DESC LIMIT ?""",
+        (model["version"], window)
     ).fetchall()
     tp = sum(row["label"] == 1 and row["decision"] == "review" for row in outcomes)
     fp = sum(row["label"] == 0 and row["decision"] == "review" for row in outcomes)

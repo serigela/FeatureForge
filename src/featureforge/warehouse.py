@@ -29,6 +29,15 @@ CREATE TABLE IF NOT EXISTS ff_predictions (
   model_version text NOT NULL,
   score double precision NOT NULL,
   decision text NOT NULL,
+  scored_at timestamptz NOT NULL,
+  processing_ms double precision
+);
+ALTER TABLE ff_predictions ADD COLUMN IF NOT EXISTS processing_ms double precision;
+CREATE TABLE IF NOT EXISTS ff_prediction_shadows (
+  event_id text PRIMARY KEY REFERENCES ff_predictions(event_id),
+  model_version text NOT NULL,
+  score double precision NOT NULL,
+  decision text NOT NULL,
   scored_at timestamptz NOT NULL
 );
 """
@@ -47,7 +56,7 @@ def sync(connection: sqlite3.Connection, dsn: str, batch_size: int = 500) -> dic
     if batch_size < 1:
         raise ValueError("batch_size must be positive")
     psycopg = _driver()
-    counts = {"events": 0, "feature_snapshots": 0, "predictions": 0}
+    counts = {"events": 0, "feature_snapshots": 0, "predictions": 0, "prediction_shadows": 0}
     with psycopg.connect(dsn) as pg:
         with pg.cursor() as cursor:
             cursor.execute(POSTGRES_SCHEMA)
@@ -67,7 +76,13 @@ def sync(connection: sqlite3.Connection, dsn: str, batch_size: int = 500) -> dic
                  lambda row: tuple(row[key] for key in ("event_id", "user_id", "event_time",
                      "feature_version", "features_json", "computed_at"))),
                 ("predictions", "SELECT * FROM predictions ORDER BY event_id",
-                 """INSERT INTO ff_predictions(event_id,model_version,score,decision,scored_at)
+                 """INSERT INTO ff_predictions(event_id,model_version,score,decision,scored_at,processing_ms)
+                 VALUES (%s,%s,%s,%s,%s,%s)
+                 ON CONFLICT(event_id) DO UPDATE SET processing_ms=EXCLUDED.processing_ms""",
+                 lambda row: tuple(row[key] for key in ("event_id", "model_version", "score",
+                     "decision", "scored_at", "processing_ms"))),
+                ("prediction_shadows", "SELECT * FROM prediction_shadows ORDER BY event_id",
+                 """INSERT INTO ff_prediction_shadows(event_id,model_version,score,decision,scored_at)
                  VALUES (%s,%s,%s,%s,%s)
                  ON CONFLICT(event_id) DO NOTHING""",
                  lambda row: tuple(row[key] for key in ("event_id", "model_version", "score",
@@ -84,7 +99,7 @@ def sync(connection: sqlite3.Connection, dsn: str, batch_size: int = 500) -> dic
 def verify(connection: sqlite3.Connection, dsn: str) -> dict:
     psycopg = _driver()
     tables = {"events": "ff_events", "feature_snapshots": "ff_feature_snapshots",
-              "predictions": "ff_predictions"}
+              "predictions": "ff_predictions", "prediction_shadows": "ff_prediction_shadows"}
     result = {}
     with psycopg.connect(dsn) as pg:
         with pg.cursor() as cursor:

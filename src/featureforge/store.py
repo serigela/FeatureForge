@@ -30,8 +30,17 @@ CREATE TABLE IF NOT EXISTS predictions (
   score REAL NOT NULL,
   decision TEXT NOT NULL,
   features_json TEXT NOT NULL,
+  scored_at TEXT NOT NULL,
+  processing_ms REAL CHECK(processing_ms >= 0)
+);
+CREATE TABLE IF NOT EXISTS prediction_shadows (
+  event_id TEXT PRIMARY KEY REFERENCES predictions(event_id),
+  model_version TEXT NOT NULL,
+  score REAL NOT NULL,
+  decision TEXT NOT NULL,
   scored_at TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS predictions_model_time ON predictions(model_version,scored_at);
 CREATE TABLE IF NOT EXISTS event_queue (
   event_id TEXT PRIMARY KEY,
   payload_json TEXT NOT NULL,
@@ -80,6 +89,9 @@ def connect(path: str | Path) -> sqlite3.Connection:
     connection.execute("PRAGMA journal_mode=WAL")
     connection.execute("PRAGMA foreign_keys=ON")
     connection.executescript(SCHEMA)
+    columns = {row["name"] for row in connection.execute("PRAGMA table_info(predictions)")}
+    if "processing_ms" not in columns:
+        connection.execute("ALTER TABLE predictions ADD COLUMN processing_ms REAL")
     return connection
 
 

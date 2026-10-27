@@ -50,19 +50,24 @@ def routing_bucket(user_id: str) -> int:
 
 
 def select(registry: str | Path, user_id: str) -> dict:
+    return select_pair(registry, user_id)[0]
+
+
+def select_pair(registry: str | Path, user_id: str) -> tuple[dict, dict | None]:
     active = load(registry)
     rollout = configuration(registry)
     if rollout and rollout["baseline_version"] != active["version"]:
         raise ValueError("rollout baseline no longer matches active model")
-    if rollout and routing_bucket(user_id) < rollout["percent"] * 100:
-        return load_version(registry, rollout["canary_version"])
-    return active
+    if not rollout:
+        return active, None
+    candidate = load_version(registry, rollout["canary_version"])
+    return (candidate, active) if routing_bucket(user_id) < rollout["percent"] * 100 else (active, candidate)
 
 
 def status(registry: str | Path, connection=None) -> dict:
     baseline = load(registry)["version"]
     rollout = configuration(registry)
-    result = {"active_version": baseline, "rollout": rollout, "versions": {}}
+    result = {"active_version": baseline, "rollout": rollout, "versions": {}, "paired": None}
     if connection is None:
         return result
     versions = [baseline]
@@ -85,4 +90,34 @@ def status(registry: str | Path, connection=None) -> dict:
             "precision": round(tp / (tp + fp), 4) if tp + fp else None,
             "recall": round(tp / (tp + fn), 4) if tp + fn else None,
         }
+    if rollout:
+        paired_rows = connection.execute(
+            """SELECT p.model_version AS served_version,p.decision AS served_decision,
+            s.model_version AS shadow_version,s.decision AS shadow_decision,e.label
+            FROM predictions p JOIN prediction_shadows s USING(event_id)
+            JOIN events e USING(event_id) WHERE p.scored_at>=?""",
+            (since,),
+        ).fetchall()
+        by_version = {version: [] for version in versions}
+        disagreements = 0
+        count = 0
+        for row in paired_rows:
+            if {row["served_version"], row["shadow_version"]} != set(versions):
+                continue
+            count += 1
+            disagreements += row["served_decision"] != row["shadow_decision"]
+            if row["label"] is not None:
+                by_version[row["served_version"]].append((row["label"], row["served_decision"]))
+                by_version[row["shadow_version"]].append((row["label"], row["shadow_decision"]))
+        metrics = {}
+        for version, labeled in by_version.items():
+            tp = sum(label == 1 and decision == "review" for label, decision in labeled)
+            fp = sum(label == 0 and decision == "review" for label, decision in labeled)
+            fn = sum(label == 1 and decision == "approve" for label, decision in labeled)
+            metrics[version] = {"precision": round(tp / (tp + fp), 4) if tp + fp else None,
+                                "recall": round(tp / (tp + fn), 4) if tp + fn else None,
+                                "tp": tp, "fp": fp, "fn": fn}
+        result["paired"] = {"event_count": count, "labeled_count": len(by_version[baseline]),
+                            "disagreement_rate": round(disagreements / count, 4) if count else None,
+                            "versions": metrics}
     return result

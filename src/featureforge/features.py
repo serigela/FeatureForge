@@ -21,14 +21,19 @@ def compute(connection: sqlite3.Connection, event: dict) -> dict[str, float]:
         ORDER BY event_time DESC, event_id DESC LIMIT 100""",
         (event["user_id"], event["event_time"], event["event_time"], event["event_id"]),
     ).fetchall()
-    recent = [row for row in history if row["event_time"] >= since]
+    recent = connection.execute(
+        """SELECT COUNT(*) AS count, COALESCE(SUM(amount),0) AS amount FROM events
+        WHERE user_id=? AND event_time >= ?
+          AND (event_time < ? OR (event_time = ? AND event_id < ?))""",
+        (event["user_id"], since, event["event_time"], event["event_time"], event["event_id"]),
+    ).fetchone()
     previous_mean = sum(row["amount"] for row in history) / len(history) if history else 0.0
     return {
         "log_amount": math.log1p(event["amount"]),
         "hour": float(stamp.hour),
         "is_weekend": float(stamp.weekday() >= 5),
-        "count_24h": float(len(recent)),
-        "amount_24h": sum(row["amount"] for row in recent),
+        "count_24h": float(recent["count"]),
+        "amount_24h": float(recent["amount"]),
         "prior_mean_amount": previous_mean,
         "amount_ratio": min(event["amount"] / previous_mean, 100.0) if previous_mean else 1.0,
         "is_new_device": float(not any(row["device_id"] == event["device_id"] for row in history)),

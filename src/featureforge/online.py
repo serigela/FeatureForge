@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from .features import FEATURE_NAMES, compute
 
 
-FEATURE_VERSION = "v1"
+FEATURE_VERSION = "v2"
 
 
 def persist(connection: sqlite3.Connection, event: dict, features: dict[str, float]) -> None:

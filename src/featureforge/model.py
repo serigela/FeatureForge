@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .features import FEATURE_NAMES, labeled_rows
+from .online import FEATURE_VERSION
 
 
 def _sigmoid(value: float) -> float:
@@ -99,7 +100,8 @@ def train(connection, registry: str | Path, epochs: int = 350, activate: bool = 
         bias -= rate * bias_gradient / count
         weights = [weight - rate * (gradient / count + 0.001 * weight)
                    for weight, gradient in zip(weights, gradients)]
-    model = {"feature_names": list(FEATURE_NAMES), "weights": weights, "bias": bias,
+    model = {"feature_names": list(FEATURE_NAMES), "feature_version": FEATURE_VERSION,
+             "weights": weights, "bias": bias,
              "means": means, "scales": scales}
     val_scores = [score(model, feature) for feature, _ in validation]
     val_labels = [label for _, label in validation]
@@ -162,6 +164,8 @@ def load_version(registry: str | Path, version: str) -> dict:
     model = json.loads((directory / f"model-{version}.json").read_text(encoding="utf-8"))
     if model["feature_names"] != list(FEATURE_NAMES):
         raise ValueError("model feature schema does not match serving code")
+    if model.get("feature_version") != FEATURE_VERSION:
+        raise ValueError("model feature version is outdated; retrain with the current feature definitions")
     if model.get("version") != version:
         raise ValueError("model version does not match registry entry")
     return model
