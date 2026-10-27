@@ -1,6 +1,6 @@
 # FeatureForge
 
-An inspectable ML platform for transaction risk. It creates synthetic data, validates and stores events, computes past-only features, trains a model with a chronological split, serves predictions, and checks live feature drift. A durable broker handles retries and replay. Online feature snapshots can be compared with offline recomputation, and PostgreSQL can mirror the warehouse tables. Staged experiments and stable user-level canary routing make model changes observable. The core demo runs locally with Python's standard library and no credentials.
+An inspectable ML platform for transaction risk. It creates synthetic data, validates and stores events, computes past-only features, trains a model with a chronological split, serves predictions, and checks live feature drift. A durable broker handles retries and replay. Online feature snapshots can be compared with offline recomputation, and PostgreSQL can mirror the warehouse tables. Staged experiments, stable user-level canary routing, paired shadow scoring, and measured prediction timings make model changes observable. The core demo runs locally with Python's standard library and no credentials.
 
 ## Why this exists
 
@@ -41,8 +41,11 @@ flowchart LR
   F --> G[Prediction API]
   F --> N[Staged experiment and canary routing]
   N --> G
+  N --> O[Shadow score the other model]
+  O --> P[(Paired evaluation log)]
   C --> G
   G --> H[(Prediction log)]
+  G --> Q[Processing time and load benchmark]
   H --> I[Drift and outcome monitoring]
   J[Durable event queue] --> K[Worker with retry and replay]
   K --> G
@@ -53,6 +56,8 @@ flowchart LR
 ```
 
 The same `features.compute` function runs in training and inference. It queries only events before the event being scored. Model threshold selection uses the validation period; the final test period is untouched until evaluation. The API stores each prediction by event ID and returns the original result on a replay.
+
+The 24-hour count and amount features aggregate **all** preceding events in that window. The prior mean and new-device check intentionally use the latest 100 preceding events. This distinction is enforced by a regression test. Feature definition version `v2` rejects older model files; retrain after upgrading from a version that used the capped 24-hour aggregate.
 
 The broker stores validated events before a worker scores them. A worker claims a time-limited lease; if it crashes, another worker can reclaim the event. A failure retries with backoff, then moves to a dead-letter state after five attempts. Replaying a delivered event returns its original prediction, so the side effect occurs once even though delivery can occur more than once. The `recovery-demo` command demonstrates this exact failure point.
 
@@ -73,6 +78,8 @@ PYTHONPATH=src python3 -m featureforge.cli train --stage
 PYTHONPATH=src python3 -m featureforge.cli canary MODEL_VERSION --percent 10
 PYTHONPATH=src python3 -m featureforge.cli rollout
 PYTHONPATH=src python3 -m featureforge.cli rollback
+PYTHONPATH=src python3 -m featureforge.cli latency --window 500
+PYTHONPATH=src python3 -m featureforge.cli benchmark --count 500 --workers 4
 ```
 
 `train` prints validation and test precision, recall, F1, confusion counts, and test average precision. The test set is the newest 20% of labeled events. The baseline is regularized logistic regression implemented locally for transparent operation and zero runtime dependencies. Performance figures from synthetic data should never be presented as real-world fraud detection results.
@@ -81,9 +88,17 @@ PYTHONPATH=src python3 -m featureforge.cli rollback
 
 Every training run saves its model, dataset fingerprint, epoch count, threshold, and time-split evaluation. `models` lists these experiments. By default, `train` activates the new version; use `train --stage` to keep the current model live. The first trained model becomes active even with `--stage` because serving needs a baseline.
 
-After reviewing a staged version, run `canary MODEL_VERSION --percent 10`. The same user is always routed to the same version during that rollout, based on a stable hash of `user_id`. An event replay keeps its original prediction and model version. `rollout` and `GET /rollout` show prediction counts, labeled counts, review rate, observed precision, and recall by version since the current rollout began. `rollback` stops routing new users to the candidate while preserving existing prediction records; `promote MODEL_VERSION` makes a version active for all new predictions and ends the canary. `GET /health` reflects a promotion without restarting the API.
+After reviewing a staged version, run `canary MODEL_VERSION --percent 10`. The same user is always routed to the same version during that rollout, based on a stable hash of `user_id`. Each new event receives one served decision and a **shadow score from the other model** using the exact same features. The shadow result is stored for analysis but never returned as the decision. An event replay keeps its original prediction and does not create another shadow record.
 
-These outcome figures are descriptive. Small labeled samples and different user populations can make a canary comparison misleading. The project does not automatically promote or roll back a model, and the API is intended for local demonstration only.
+`rollout` and `GET /rollout` show served prediction counts by version since the current rollout began. Their paired section compares both models on the **same events**, including decision disagreement and observed precision and recall once outcomes arrive. `rollback` stops routing new users to the candidate while preserving existing records; `promote MODEL_VERSION` makes a version active for all new predictions and ends the canary. `GET /health` reflects a promotion without restarting the API.
+
+These outcome figures are descriptive. Small labeled samples can make even a paired comparison misleading. `/monitor` evaluates only predictions served by the active model against its own training reference; `/rollout` shows the paired candidate comparison. The project does not automatically promote or roll back a model, and the API is intended for local demonstration only.
+
+## Timing and isolated load test
+
+Every new prediction stores `processing_ms`, measured from validation through feature and model computation, before the storage write. `GET /latency` and `latency --window 500` report p50, p95, and p99 for recent predictions, including a breakdown by served model version. Older database records have no timing and are excluded. The dashboard displays these percentiles.
+
+`benchmark --count 500 --workers 4` makes a temporary SQLite backup and copies the model registry, then scores synthetic events concurrently against those copies. It reports wall-clock percentiles and measured throughput for **this machine and run**. It does not add benchmark events to the operational database. The count is limited to 5,000 and workers to 32. These measurements are local demonstration results, not production capacity claims.
 
 ## API
 
@@ -102,6 +117,7 @@ These outcome figures are descriptive. Small labeled samples and different user 
 | `GET /parity` | Compare online features with offline recomputation |
 | `GET /models` | List model experiments and offline evaluation |
 | `GET /rollout` | Show traffic split and observed outcomes by model version |
+| `GET /latency` | Show recent prediction processing percentiles by model version |
 | `GET /` | Local operations dashboard |
 
 `POST /predict` requires `event_id`, `user_id`, timezone-aware ISO 8601 `event_time`, positive `amount`, `merchant_category`, and `device_id`. It returns a risk score and a `review` or `approve` decision. For the demo, use an event timestamp after the synthetic history.
@@ -112,7 +128,7 @@ For asynchronous scoring, send the same event object to `/events` and run `PYTHO
 
 ## PostgreSQL warehouse
 
-The operational store and online snapshot remain local SQLite. PostgreSQL is an optional warehouse mirror for event history, feature snapshots, and predictions. Sync is idempotent and propagates delayed outcome labels.
+The operational store and online snapshot remain local SQLite. PostgreSQL is an optional warehouse mirror for event history, feature snapshots, served predictions, and shadow predictions. Sync is idempotent and propagates delayed outcome labels and processing time.
 
 ```bash
 docker compose up -d postgres
@@ -138,15 +154,15 @@ The broker and online store use SQLite so the core system runs on a laptop; Post
 
 Next substantial phases:
 
-1. Add automatic rollback guardrails backed by sufficient labeled outcomes and latency charts to the dashboard.
+1. Add automatic rollback guardrails backed by enough paired labeled outcomes and representative latency measurements.
 2. Add a real public dataset with documented licensing and a reproducible benchmark. Keep personal or payment data out of the repository.
 3. Replace the local broker with a distributed event system and add a high-volume load and recovery benchmark.
 
 ## Repository structure
 
 ```text
-src/featureforge/  generator, ingestion, broker, features, training, rollout, API, stores, monitoring, CLI
-tests/             pipeline, recovery, parity, rollout, HTTP, and PostgreSQL checks
+src/featureforge/  generator, ingestion, broker, features, training, rollout, performance, API, stores, monitoring, CLI
+tests/             pipeline, recovery, parity, rollout, timing, HTTP, and PostgreSQL checks
 .github/workflows/ CI with PostgreSQL service
 compose.yaml       local PostgreSQL warehouse
 Dockerfile         containerized API
